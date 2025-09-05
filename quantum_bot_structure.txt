@@ -1,0 +1,72 @@
+bot-quantum-max/
+├── README.md
+├── requirements.txt
+├── .env.example
+├── Dockerfile
+├── docker-compose.yml
+├── train.py
+├── predict_today.py
+├── pytest.ini
+├── config/
+│   ├── __init__.py
+│   └── settings.py
+├── sql/
+│   ├── schema.sql
+│   └── indices.sql
+├── src/
+│   ├── __init__.py
+│   ├── data/
+│   │   ├── __init__.py
+│   │   ├── collectors/
+│   │   │   ├── __init__.py
+│   │   │   ├── football_data.py
+│   │   │   ├── understat.py
+│   │   │   ├── weather.py
+│   │   │   └── odds_api.py
+│   │   ├── database.py
+│   │   └── etl.py
+│   ├── features/
+│   │   ├── __init__.py
+│   │   ├── engineering.py
+│   │   ├── tactical.py
+│   │   └── graph_features.py
+│   ├── models/
+│   │   ├── __init__.py
+│   │   ├── base.py
+│   │   ├── supervised.py
+│   │   ├── gnn.py
+│   │   ├── bayesian.py
+│   │   ├── causal.py
+│   │   └── rl.py
+│   ├── sim/
+│   │   ├── __init__.py
+│   │   ├── monte_carlo.py
+│   │   └── agent_based.py
+│   ├── portfolio/
+│   │   ├── __init__.py
+│   │   ├── optimizer.py
+│   │   ├── kelly.py
+│   │   └── combos.py
+│   ├── ui/
+│   │   ├── __init__.py
+│   │   └── app.py
+│   ├── ops/
+│   │   ├── __init__.py
+│   │   ├── scheduler.py
+│   │   ├── alerts.py
+│   │   └── monitoring.py
+│   └── utils/
+│       ├── __init__.py
+│       ├── logging.py
+│       └── helpers.py
+├── data/
+│   ├── raw/
+│   ├── processed/
+│   └── models/
+├── logs/
+├── notebooks/
+└── tests/
+    ├── __init__.py
+    ├── test_etl.py
+    ├── test_models.py
+    └── test_portfolio.py

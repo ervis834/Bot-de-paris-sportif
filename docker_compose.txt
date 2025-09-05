@@ -1,0 +1,132 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg14
+    container_name: quantum_postgres
+    environment:
+      POSTGRES_DB: quantum_bot
+      POSTGRES_USER: quantum
+      POSTGRES_PASSWORD: quantum_password_2024
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./sql/indices.sql:/docker-entrypoint-initdb.d/02-indices.sql
+    networks:
+      - quantum_network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: quantum_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - quantum_network
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+
+  quantum-bot:
+    build: .
+    container_name: quantum_bot
+    environment:
+      DATABASE_URL: postgresql://quantum:quantum_password_2024@postgres:5432/quantum_bot
+      REDIS_URL: redis://redis:6379
+      PYTHONUNBUFFERED: 1
+    env_file:
+      - .env
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - quantum_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  quantum-trainer:
+    build: .
+    container_name: quantum_trainer
+    environment:
+      DATABASE_URL: postgresql://quantum:quantum_password_2024@postgres:5432/quantum_bot
+      REDIS_URL: redis://redis:6379
+      PYTHONUNBUFFERED: 1
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - quantum_network
+    restart: "no"
+    command: python train.py
+    profiles:
+      - training
+
+  quantum-predictor:
+    build: .
+    container_name: quantum_predictor
+    environment:
+      DATABASE_URL: postgresql://quantum:quantum_password_2024@postgres:5432/quantum_bot
+      REDIS_URL: redis://redis:6379
+      PYTHONUNBUFFERED: 1
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - quantum_network
+    restart: "no"
+    command: python predict_today.py
+    profiles:
+      - prediction
+
+  quantum-scheduler:
+    build: .
+    container_name: quantum_scheduler
+    environment:
+      DATABASE_URL: postgresql://quantum:quantum_password_2024@postgres:5432/quantum_bot
+      REDIS_URL: redis://redis:6379
+      PYTHONUNBUFFERED: 1
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - quantum_network
+    restart: unless-stopped
+    command: python -m src.ops.scheduler
+    profiles:
+      - scheduler
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  quantum_network:
+    driver: bridge
