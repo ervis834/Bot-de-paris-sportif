@@ -1,923 +1,943 @@
-"""Streamlit dashboard for Bot Quantum Max."""
+mport React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Send, Menu, Home, TrendingUp, DollarSign, Settings, Bot, Plus, X, ChevronDown, Check, AlertCircle, Trophy, Target, Zap, Shield, Brain, Activity } from 'lucide-react';
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import json
-from datetime import datetime, timedelta
-import sys
-import os
+// Configuration API
+const API_CONFIG = {
+  OPENAI_API_KEY: process.env.REACT_APP_OPENAI_API_KEY || '',
+  BACKEND_URL: process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000',
+  WS_URL: process.env.REACT_APP_WS_URL || 'ws://localhost:8000/ws'
+};
 
-# Add src to path
-sys.path.append('src')
-sys.path.append('.')
+// Hook pour la connexion WebSocket temps réel
+const useWebSocket = (url) => {
+  const [socket, setSocket] = useState(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [lastMessage, setLastMessage] = useState(null);
 
-from src.data.database import db_manager, match_queries
-from src.models.supervised import SupervisedMatchPredictor
-from src.models.base import model_registry
-from src.portfolio.optimizer import PortfolioOptimizer
-from src.portfolio.combos import ComboGenerator
-from config.settings import settings
-
-# Page configuration
-st.set_page_config(
-    page_title="Bot Quantum Max",
-    page_icon="⚽",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Custom CSS
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: bold;
-        color: #1f77b4;
-        text-align: center;
-        margin-bottom: 2rem;
-        background: linear-gradient(90deg, #1f77b4, #ff7f0e);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
+  useEffect(() => {
+    const ws = new WebSocket(url);
+    
+    ws.onopen = () => {
+      setIsConnected(true);
+      console.log('WebSocket connected');
+    };
+    
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      setLastMessage(data);
+    };
+    
+    ws.onclose = () => {
+      setIsConnected(false);
+      console.log('WebSocket disconnected');
+    };
+    
+    setSocket(ws);
+    
+    return () => {
+      ws.close();
+    };
+  }, [url]);
+  
+  const sendMessage = (message) => {
+    if (socket && isConnected) {
+      socket.send(JSON.stringify(message));
     }
-    
-    .metric-card {
-        background: #f0f2f6;
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 5px solid #1f77b4;
+  };
+  
+  return { isConnected, lastMessage, sendMessage };
+};
+
+// Composant principal de l'application
+const QuantumBetApp = () => {
+  const [activeTab, setActiveTab] = useState('home');
+  const [messages, setMessages] = useState([
+    {
+      type: 'bot',
+      content: "Bonjour! Je suis votre assistant IA Quantum Max avec GPT-5. Comment puis-je vous aider aujourd'hui?",
+      timestamp: new Date()
     }
-    
-    .prediction-card {
-        background: white;
-        padding: 1.5rem;
-        border-radius: 15px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        margin: 1rem 0;
-        border-left: 5px solid #2e8b57;
+  ]);
+  const [inputMessage, setInputMessage] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
+  const [predictions, setPredictions] = useState([]);
+  const [portfolio, setPortfolio] = useState({
+    bankroll: 12547,
+    roi: 0.123,
+    winRate: 0.678,
+    dailyPnl: 247
+  });
+  const [selectedBets, setSelectedBets] = useState([]);
+  const [showBetSlip, setShowBetSlip] = useState(false);
+  
+  const chatEndRef = useRef(null);
+  const { isConnected, lastMessage, sendMessage: sendWsMessage } = useWebSocket(API_CONFIG.WS_URL);
+  
+  // Scroll automatique vers le bas du chat
+  const scrollToBottom = () => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+  
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+  
+  // Traitement des messages WebSocket
+  useEffect(() => {
+    if (lastMessage) {
+      if (lastMessage.type === 'prediction_update') {
+        setPredictions(lastMessage.data);
+      } else if (lastMessage.type === 'portfolio_update') {
+        setPortfolio(lastMessage.data);
+      }
     }
-    
-    .high-confidence {
-        border-left-color: #228b22 !important;
-    }
-    
-    .medium-confidence {
-        border-left-color: #ffa500 !important;
-    }
-    
-    .low-confidence {
-        border-left-color: #ff6b6b !important;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-
-@st.cache_data(ttl=300)  # Cache for 5 minutes
-def load_data():
-    """Load data with caching."""
-    try:
-        # Get today's matches
-        today_matches = get_todays_matches()
-        
-        # Get recent predictions
-        recent_predictions = get_recent_predictions()
-        
-        # Get model performance
-        model_performance = get_model_performance()
-        
-        # Get portfolio performance
-        portfolio_performance = get_portfolio_performance()
-        
-        return {
-            'matches': today_matches,
-            'predictions': recent_predictions,
-            'model_performance': model_performance,
-            'portfolio_performance': portfolio_performance
-        }
-    except Exception as e:
-        st.error(f"Error loading data: {e}")
-        return None
-
-
-def get_todays_matches():
-    """Get today's matches."""
-    today = datetime.now().date()
-    tomorrow = today + timedelta(days=1)
-    
-    query = """
-    SELECT 
-        m.id as match_id,
-        m.match_date,
-        ht.name as home_team,
-        at.name as away_team,
-        m.league,
-        m.status
-    FROM matches m
-    JOIN teams ht ON m.home_team_id = ht.id
-    JOIN teams at ON m.away_team_id = at.id
-    WHERE DATE(m.match_date) BETWEEN %s AND %s
-    ORDER BY m.match_date
-    """
-    
-    return db_manager.get_dataframe(query, params=(today, tomorrow))
-
-
-def get_recent_predictions():
-    """Get recent predictions."""
-    query = """
-    SELECT 
-        p.match_id,
-        p.model_name,
-        p.prediction_date,
-        p.home_win_prob,
-        p.draw_prob,
-        p.away_win_prob,
-        p.confidence_score,
-        m.match_date,
-        ht.name as home_team,
-        at.name as away_team,
-        m.league
-    FROM predictions p
-    JOIN matches m ON p.match_id = m.id
-    JOIN teams ht ON m.home_team_id = ht.id
-    JOIN teams at ON m.away_team_id = at.id
-    WHERE p.prediction_date >= CURRENT_DATE - INTERVAL '7 days'
-    ORDER BY p.prediction_date DESC, p.confidence_score DESC
-    """
-    
-    return db_manager.get_dataframe(query)
-
-
-def get_model_performance():
-    """Get model performance metrics."""
-    query = """
-    SELECT 
-        model_name,
-        evaluation_date,
-        dataset_type,
-        accuracy,
-        precision,
-        recall,
-        f1_score,
-        log_loss,
-        sample_size
-    FROM model_performance
-    WHERE evaluation_date >= CURRENT_DATE - INTERVAL '30 days'
-    ORDER BY evaluation_date DESC
-    """
-    
-    return db_manager.get_dataframe(query)
-
-
-def get_portfolio_performance():
-    """Get portfolio performance data."""
-    query = """
-    SELECT 
-        date,
-        total_bankroll,
-        daily_pnl,
-        total_pnl,
-        roi,
-        sharpe_ratio,
-        max_drawdown,
-        win_rate,
-        total_bets
-    FROM portfolio_performance
-    WHERE date >= CURRENT_DATE - INTERVAL '90 days'
-    ORDER BY date
-    """
-    
-    return db_manager.get_dataframe(query)
-
-
-def main():
-    """Main application."""
-    # Header
-    st.markdown('<h1 class="main-header">⚽ Bot Quantum Max</h1>', unsafe_allow_html=True)
-    st.markdown("**AI-Powered Football Betting Intelligence Platform**")
-    
-    # Sidebar
-    with st.sidebar:
-        st.title("Navigation")
-        page = st.selectbox(
-            "Select Page",
-            ["🏠 Dashboard", "🔮 Predictions", "📊 Analytics", "💰 Portfolio", "🎯 Combinations", "⚙️ Settings"]
-        )
-        
-        # Status indicators
-        st.subheader("System Status")
-        
-        try:
-            data = load_data()
-            if data:
-                st.success("✅ Data loaded successfully")
-                st.info(f"📊 {len(data['matches'])} matches today")
-                st.info(f"🔮 {len(data['predictions'])} recent predictions")
-            else:
-                st.error("❌ Data loading failed")
-        except Exception as e:
-            st.error(f"❌ System error: {str(e)[:50]}...")
-        
-        # Quick stats
-        if 'data' in locals() and data:
-            st.subheader("Quick Stats")
-            if not data['portfolio_performance'].empty:
-                latest_perf = data['portfolio_performance'].iloc[-1]
-                st.metric("Current ROI", f"{latest_perf['roi']:.1%}")
-                st.metric("Win Rate", f"{latest_perf['win_rate']:.1%}")
-    
-    # Main content based on selected page
-    if page == "🏠 Dashboard":
-        dashboard_page()
-    elif page == "🔮 Predictions":
-        predictions_page()
-    elif page == "📊 Analytics":
-        analytics_page()
-    elif page == "💰 Portfolio":
-        portfolio_page()
-    elif page == "🎯 Combinations":
-        combinations_page()
-    elif page == "⚙️ Settings":
-        settings_page()
-
-
-def dashboard_page():
-    """Dashboard overview page."""
-    st.header("📊 Dashboard Overview")
-    
-    data = load_data()
-    if not data:
-        st.error("Unable to load data")
-        return
-    
-    # Key metrics row
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric(
-            "Today's Matches",
-            len(data['matches']),
-            delta=None
-        )
-    
-    with col2:
-        high_conf_preds = len([p for _, p in data['predictions'].iterrows() 
-                              if p['confidence_score'] >= settings.confidence_threshold])
-        st.metric(
-            "High Confidence Predictions",
-            high_conf_preds,
-            delta=None
-        )
-    
-    with col3:
-        if not data['portfolio_performance'].empty:
-            latest_roi = data['portfolio_performance'].iloc[-1]['roi']
-            st.metric(
-                "Current ROI",
-                f"{latest_roi:.1%}",
-                delta=f"{latest_roi:.1%}"
-            )
-    
-    with col4:
-        if not data['model_performance'].empty:
-            avg_accuracy = data['model_performance'].groupby('model_name')['accuracy'].mean().mean()
-            st.metric(
-                "Avg Model Accuracy",
-                f"{avg_accuracy:.1%}",
-                delta=None
-            )
-    
-    # Today's matches overview
-    st.subheader("🏆 Today's Matches")
-    
-    if not data['matches'].empty:
-        for _, match in data['matches'].iterrows():
-            # Get prediction for this match
-            match_preds = data['predictions'][data['predictions']['match_id'] == match['match_id']]
-            
-            if not match_preds.empty:
-                pred = match_preds.iloc[0]  # Get first prediction
-                
-                # Determine confidence level for styling
-                conf_level = "high" if pred['confidence_score'] >= 0.7 else "medium" if pred['confidence_score'] >= 0.5 else "low"
-                
-                st.markdown(f"""
-                <div class="prediction-card {conf_level}-confidence">
-                    <h4>{match['home_team']} vs {match['away_team']}</h4>
-                    <p><strong>League:</strong> {match['league']} | <strong>Time:</strong> {match['match_date']}</p>
-                    <p><strong>Prediction:</strong> Home: {pred['home_win_prob']:.1%} | Draw: {pred['draw_prob']:.1%} | Away: {pred['away_win_prob']:.1%}</p>
-                    <p><strong>Confidence:</strong> {pred['confidence_score']:.1%}</p>
-                </div>
-                """, unsafe_allow_html=True)
-    else:
-        st.info("No matches scheduled for today")
-    
-    # Quick charts
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("📈 Recent ROI Trend")
-        if not data['portfolio_performance'].empty:
-            fig = px.line(
-                data['portfolio_performance'], 
-                x='date', 
-                y='roi',
-                title="ROI Over Time"
-            )
-            fig.update_layout(height=300)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No portfolio data available")
-    
-    with col2:
-        st.subheader("🎯 Model Performance")
-        if not data['model_performance'].empty:
-            model_acc = data['model_performance'].groupby('model_name')['accuracy'].mean().reset_index()
-            fig = px.bar(
-                model_acc,
-                x='model_name',
-                y='accuracy',
-                title="Model Accuracy Comparison"
-            )
-            fig.update_layout(height=300)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No model performance data available")
-
-
-def predictions_page():
-    """Predictions page."""
-    st.header("🔮 Match Predictions")
-    
-    data = load_data()
-    if not data:
-        st.error("Unable to load data")
-        return
-    
-    # Filters
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        leagues = ['All'] + list(data['predictions']['league'].unique())
-        selected_league = st.selectbox("League", leagues)
-    
-    with col2:
-        min_confidence = st.slider("Minimum Confidence", 0.0, 1.0, 0.5, 0.05)
-    
-    with col3:
-        models = ['All'] + list(data['predictions']['model_name'].unique())
-        selected_model = st.selectbox("Model", models)
-    
-    # Filter predictions
-    filtered_preds = data['predictions'].copy()
-    
-    if selected_league != 'All':
-        filtered_preds = filtered_preds[filtered_preds['league'] == selected_league]
-    
-    if selected_model != 'All':
-        filtered_preds = filtered_preds[filtered_preds['model_name'] == selected_model]
-    
-    filtered_preds = filtered_preds[filtered_preds['confidence_score'] >= min_confidence]
-    
-    # Display predictions
-    st.subheader(f"📊 Filtered Predictions ({len(filtered_preds)} results)")
-    
-    if not filtered_preds.empty:
-        # Create interactive table
-        display_df = filtered_preds[['home_team', 'away_team', 'league', 'match_date', 
-                                   'home_win_prob', 'draw_prob', 'away_win_prob', 
-                                   'confidence_score', 'model_name']].copy()
-        
-        # Format percentages
-        for col in ['home_win_prob', 'draw_prob', 'away_win_prob', 'confidence_score']:
-            display_df[col] = display_df[col].apply(lambda x: f"{x:.1%}")
-        
-        st.dataframe(
-            display_df,
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Prediction distribution
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("🎯 Confidence Distribution")
-            fig = px.histogram(
-                filtered_preds,
-                x='confidence_score',
-                nbins=20,
-                title="Distribution of Prediction Confidence"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            st.subheader("📊 Outcome Probability Distribution")
-            outcome_data = []
-            for _, pred in filtered_preds.iterrows():
-                outcome_data.extend([
-                    {'Outcome': 'Home Win', 'Probability': pred['home_win_prob']},
-                    {'Outcome': 'Draw', 'Probability': pred['draw_prob']},
-                    {'Outcome': 'Away Win', 'Probability': pred['away_win_prob']}
-                ])
-            
-            outcome_df = pd.DataFrame(outcome_data)
-            fig = px.box(
-                outcome_df,
-                x='Outcome',
-                y='Probability',
-                title="Outcome Probability Distributions"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-    
-    else:
-        st.info("No predictions match the selected criteria")
-
-
-def analytics_page():
-    """Analytics and model performance page."""
-    st.header("📊 Analytics & Model Performance")
-    
-    data = load_data()
-    if not data:
-        st.error("Unable to load data")
-        return
-    
-    if data['model_performance'].empty:
-        st.warning("No model performance data available")
-        return
-    
-    # Model performance comparison
-    st.subheader("🤖 Model Performance Comparison")
-    
-    perf_metrics = ['accuracy', 'precision', 'recall', 'f1_score']
-    selected_metric = st.selectbox("Select Metric", perf_metrics)
-    
-    # Group by model and get latest performance
-    latest_perf = data['model_performance'].sort_values('evaluation_date').groupby('model_name').tail(1)
-    
-    fig = px.bar(
-        latest_perf,
-        x='model_name',
-        y=selected_metric,
-        title=f"Latest {selected_metric.title()} by Model",
-        color=selected_metric,
-        color_continuous_scale='viridis'
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Performance over time
-    st.subheader("📈 Performance Trends")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig = px.line(
-            data['model_performance'],
-            x='evaluation_date',
-            y='accuracy',
-            color='model_name',
-            title="Accuracy Over Time"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        fig = px.line(
-            data['model_performance'],
-            x='evaluation_date',
-            y='f1_score',
-            color='model_name',
-            title="F1 Score Over Time"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Detailed metrics table
-    st.subheader("📋 Detailed Performance Metrics")
-    
-    metrics_summary = latest_perf.groupby('model_name').agg({
-        'accuracy': 'mean',
-        'precision': 'mean',
-        'recall': 'mean',
-        'f1_score': 'mean',
-        'log_loss': 'mean',
-        'sample_size': 'sum'
-    }).round(3)
-    
-    st.dataframe(metrics_summary, use_container_width=True)
-
-
-def portfolio_page():
-    """Portfolio management page."""
-    st.header("💰 Portfolio Management")
-    
-    data = load_data()
-    if not data:
-        st.error("Unable to load data")
-        return
-    
-    if data['portfolio_performance'].empty:
-        st.warning("No portfolio data available")
-        return
-    
-    # Portfolio overview
-    latest_portfolio = data['portfolio_performance'].iloc[-1]
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric(
-            "Total Bankroll",
-            f"${latest_portfolio['total_bankroll']:,.0f}",
-            delta=f"${latest_portfolio['daily_pnl']:,.0f}"
-        )
-    
-    with col2:
-        st.metric(
-            "Total P&L",
-            f"${latest_portfolio['total_pnl']:,.0f}",
-            delta=f"{latest_portfolio['roi']:.1%}"
-        )
-    
-    with col3:
-        st.metric(
-            "Sharpe Ratio",
-            f"{latest_portfolio['sharpe_ratio']:.2f}",
-            delta=None
-        )
-    
-    with col4:
-        st.metric(
-            "Win Rate",
-            f"{latest_portfolio['win_rate']:.1%}",
-            delta=None
-        )
-    
-    # Performance charts
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("📈 Bankroll Evolution")
-        fig = px.line(
-            data['portfolio_performance'],
-            x='date',
-            y='total_bankroll',
-            title="Bankroll Over Time"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        st.subheader("💹 Daily P&L")
-        fig = px.bar(
-            data['portfolio_performance'],
-            x='date',
-            y='daily_pnl',
-            title="Daily Profit & Loss",
-            color='daily_pnl',
-            color_continuous_scale='RdYlGn'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Risk metrics
-    st.subheader("⚠️ Risk Metrics")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig = px.line(
-            data['portfolio_performance'],
-            x='date',
-            y='max_drawdown',
-            title="Maximum Drawdown Over Time"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        fig = px.line(
-            data['portfolio_performance'],
-            x='date',
-            y='sharpe_ratio',
-            title="Sharpe Ratio Evolution"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-
-def ai_assistant_page():
-    """AI Assistant page with chatbot interface."""
-    st.header("🤖 Assistant IA Quantum")
-    
-    st.markdown("""
-    **Commandez Bot Quantum Max avec des instructions en langage naturel !**
-    
-    **Exemples de commandes :**
-    - *"Crée un combiné avec 3 matchs d'aujourd'hui ayant des cotes supérieures à 1.50"*
-    - *"Montre-moi les prédictions les plus confiantes pour demain"*
-    - *"Analyse le match PSG vs Lyon en détail"*
-    - *"Quel est le statut de mon portefeuille ?"*
-    - *"Trouve-moi des paris à valeur élevée pour ce weekend"*
-    """)
-    
-    # Check for OpenAI API key
-    openai_key = st.secrets.get('OPENAI_API_KEY', '') if hasattr(st, 'secrets') else os.environ.get('OPENAI_API_KEY', '')
-    
-    if not openai_key:
-        st.warning("⚠️ Clé API OpenAI non configurée")
-        
-        with st.expander("Configuration OpenAI"):
-            api_key_input = st.text_input(
-                "Entrez votre clé API OpenAI:",
-                type="password",
-                help="Obtenez votre clé sur https://platform.openai.com/api-keys"
-            )
-            
-            if api_key_input:
-                os.environ['OPENAI_API_KEY'] = api_key_input
-                st.success("✅ Clé API configurée")
-                st.rerun()
-        return
-    
-    # Initialize chatbot
-    if 'chatbot' not in st.session_state:
-        from src.ui.chatbot import QuantumChatBot
-        try:
-            st.session_state.chatbot = QuantumChatBot(openai_key, model="gpt-4")
-            st.success("🤖 Assistant IA initialisé")
-        except Exception as e:
-            st.error(f"Erreur lors de l'initialisation: {e}")
-            return
-    
-    if 'chat_history' not in st.session_state:
-        st.session_state.chat_history = []
-    
-    # Quick action buttons
-    st.subheader("🚀 Actions Rapides")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        if st.button("📊 Combiné du Jour"):
-            quick_command = "Crée un combiné équilibré avec 3 matchs d'aujourd'hui ayant des cotes entre 1.50 et 3.00"
-            st.session_state.pending_command = quick_command
-    
-    with col2:
-        if st.button("🎯 Top Prédictions"):
-            quick_command = "Montre-moi les 5 meilleures prédictions avec une confiance supérieure à 70%"
-            st.session_state.pending_command = quick_command
-    
-    with col3:
-        if st.button("💰 Statut Portfolio"):
-            quick_command = "Quel est le statut actuel de mon portefeuille de paris ?"
-            st.session_state.pending_command = quick_command
-    
-    with col4:
-        if st.button("🔍 Paris Valeur"):
-            quick_command = "Trouve-moi des paris à valeur élevée pour les prochains matchs"
-            st.session_state.pending_command = quick_command
-    
-    # Chat interface
-    st.subheader("💬 Discussion avec l'Assistant")
-    
-    # Display chat history
-    chat_container = st.container()
-    with chat_container:
-        for i, message in enumerate(st.session_state.chat_history):
-            if message['role'] == 'user':
-                with st.chat_message("user"):
-                    st.write(message['content'])
-            else:
-                with st.chat_message("assistant"):
-                    if isinstance(message['content'], str):
-                        st.write(message['content'])
-                    else:
-                        # Display structured response
-                        response = message['content']
-                        if response.get('type') == 'success':
-                            st.success(response.get('explanation', ''))
-                            
-                            # Display results based on command
-                            result = response.get('result', {})
-                            command = response.get('command', '')
-                            
-                            if command == 'create_combo' and result.get('success'):
-                                display_combo_in_chat(result)
-                            elif command == 'get_predictions' and result.get('success'):
-                                display_predictions_in_chat(result)
-                            elif command == 'portfolio_status' and result.get('success'):
-                                display_portfolio_in_chat(result)
-                            elif command == 'find_value_bets' and result.get('success'):
-                                display_value_bets_in_chat(result)
-                            else:
-                                st.json(result)
-                        
-                        elif response.get('type') == 'clarification':
-                            st.warning(response.get('message', ''))
-                            if response.get('suggestions'):
-                                st.write("**Suggestions:**")
-                                for suggestion in response['suggestions']:
-                                    st.write(f"• {suggestion}")
-                        
-                        else:  # error
-                            st.error(response.get('message', 'Erreur inconnue'))
-    
-    # Handle pending command from quick buttons
-    if hasattr(st.session_state, 'pending_command'):
-        user_input = st.session_state.pending_command
-        del st.session_state.pending_command
-        process_chat_input(user_input)
-    
-    # User input
-    user_input = st.chat_input("Tapez votre commande ici...")
-    if user_input:
-        process_chat_input(user_input)
-
-
-def process_chat_input(user_input: str):
-    """Process user input and get chatbot response."""
-    # Add user message to history
-    st.session_state.chat_history.append({
-        'role': 'user',
-        'content': user_input
-    })
-    
-    # Get chatbot response
-    with st.spinner("🤖 L'assistant réfléchit..."):
-        try:
-            response = st.session_state.chatbot.chat(user_input)
-            
-            # Add response to history
-            st.session_state.chat_history.append({
-                'role': 'assistant',
-                'content': response
-            })
-            
-        except Exception as e:
-            error_response = {
-                'type': 'error',
-                'message': f"Erreur de traitement: {str(e)}"
+  }, [lastMessage]);
+  
+  // Fonction pour appeler GPT-5 (simulation avec fallback GPT-4)
+  const callGPT5 = async (prompt) => {
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${API_CONFIG.OPENAI_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: 'gpt-4-turbo-preview', // Utilisera GPT-5 quand disponible
+          messages: [
+            {
+              role: 'system',
+              content: `Tu es l'assistant IA de Bot Quantum Max, un système avancé de prédiction sportive et de paris intelligents.
+              
+              CAPACITÉS:
+              - Créer des combinés optimisés
+              - Analyser les matchs en temps réel
+              - Gérer le portefeuille de paris
+              - Trouver des value bets
+              - Prédire avec des modèles ML avancés
+              
+              STYLE:
+              - Professionnel mais accessible
+              - Précis dans les probabilités
+              - Proactif dans les recommandations
+              
+              COMMANDES SPÉCIALES:
+              - /combo [critères] : Créer un combiné
+              - /predict [match] : Prédiction détaillée
+              - /portfolio : Statut du portefeuille
+              - /value : Chercher des value bets
+              - /live : Mises à jour en temps réel`
+            },
+            {
+              role: 'user',
+              content: prompt
             }
-            st.session_state.chat_history.append({
-                'role': 'assistant',
-                'content': error_response
-            })
+          ],
+          temperature: 0.3,
+          max_tokens: 500
+        })
+      });
+      
+      const data = await response.json();
+      return data.choices[0].message.content;
+    } catch (error) {
+      console.error('Erreur GPT-5:', error);
+      return "Désolé, une erreur s'est produite. Veuillez réessayer.";
+    }
+  };
+  
+  // Traitement des commandes du chatbot
+  const processCommand = async (message) => {
+    const lowerMessage = message.toLowerCase();
     
-    st.rerun()
-
-
-def display_combo_in_chat(result):
-    """Display combo result in chat."""
-    if result.get('success'):
-        combo = result['combo']
+    // Détection des intentions
+    if (lowerMessage.includes('combiné') || lowerMessage.includes('combo')) {
+      return await createCombo(message);
+    } else if (lowerMessage.includes('prédiction') || lowerMessage.includes('predict')) {
+      return await getPredictions(message);
+    } else if (lowerMessage.includes('portefeuille') || lowerMessage.includes('portfolio')) {
+      return getPortfolioStatus();
+    } else if (lowerMessage.includes('value') || lowerMessage.includes('valeur')) {
+      return await findValueBets(message);
+    } else {
+      // Utiliser GPT-5 pour les requêtes complexes
+      return await callGPT5(message);
+    }
+  };
+  
+  // Création de combinés
+  const createCombo = async (message) => {
+    // Parser les critères depuis le message
+    const matches = message.match(/(\d+)\s*match/i);
+    const odds = message.match(/cote[s]?\s*[><=]+\s*([\d.]+)/i);
+    
+    const numMatches = matches ? parseInt(matches[1]) : 3;
+    const minOdds = odds ? parseFloat(odds[1]) : 1.5;
+    
+    // Appel API backend
+    try {
+      const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/create-combo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          num_matches: numMatches,
+          min_odds: minOdds,
+          type: 'balanced'
+        })
+      });
+      
+      const combo = await response.json();
+      
+      // Formatter la réponse
+      return {
+        type: 'combo',
+        data: combo,
+        message: `✅ Combiné créé avec succès!
         
-        st.success("✅ Combiné créé avec succès!")
-        
-        # Metrics
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Cote Totale", f"{combo['total_odds']:.2f}")
-        with col2:
-            st.metric("Valeur Attendue", f"{combo['expected_value']:.1%}")
-        with col3:
-            st.metric("Mise Recommandée", result['recommended_stake'])
-        
-        # Selections
-        st.write("**Sélections:**")
-        selections_df = pd.DataFrame(combo['selections'])
-        st.dataframe(
-            selections_df[['match', 'selection', 'odds', 'probability', 'confidence']],
-            use_container_width=True
-        )
-    else:
-        st.error(result.get('message', 'Échec de création du combiné'))
+**${combo.selections.length} sélections**
+- Cote totale: **${combo.total_odds.toFixed(2)}**
+- Mise recommandée: **${(combo.recommended_stake * 100).toFixed(1)}%** du bankroll
+- Valeur attendue: **${(combo.expected_value * 100).toFixed(1)}%**
 
-
-def display_predictions_in_chat(result):
-    """Display predictions result in chat."""
-    if result.get('success'):
-        predictions = result['predictions']
+${combo.selections.map(s => `• ${s.match}: ${s.selection} @${s.odds.toFixed(2)}`).join('\n')}`
+      };
+    } catch (error) {
+      return "Erreur lors de la création du combiné. Veuillez réessayer.";
+    }
+  };
+  
+  // Récupération des prédictions
+  const getPredictions = async (message) => {
+    try {
+      const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/predictions`);
+      const data = await response.json();
+      
+      setPredictions(data.predictions);
+      
+      return {
+        type: 'predictions',
+        data: data.predictions,
+        message: `🔮 **${data.predictions.length} prédictions disponibles**
         
-        st.info(f"🔮 {len(predictions)} prédictions trouvées")
+Top 3 avec la meilleure confiance:
+${data.predictions.slice(0, 3).map(p => 
+  `• ${p.home_team} vs ${p.away_team}
+   Prédiction: **${p.predicted_outcome}**
+   Confiance: **${(p.confidence * 100).toFixed(1)}%**`
+).join('\n\n')}`
+      };
+    } catch (error) {
+      return "Erreur lors de la récupération des prédictions.";
+    }
+  };
+  
+  // Statut du portefeuille
+  const getPortfolioStatus = () => {
+    return {
+      type: 'portfolio',
+      data: portfolio,
+      message: `💰 **Statut du Portefeuille**
+      
+• Bankroll: **€${portfolio.bankroll.toLocaleString()}**
+• ROI: **${(portfolio.roi * 100).toFixed(1)}%**
+• Win Rate: **${(portfolio.winRate * 100).toFixed(1)}%**
+• P&L Aujourd'hui: **€${portfolio.dailyPnl > 0 ? '+' : ''}${portfolio.dailyPnl}**
+
+Performance: ${portfolio.roi > 0.1 ? '🟢 Excellente' : portfolio.roi > 0 ? '🟡 Positive' : '🔴 À surveiller'}`
+    };
+  };
+  
+  // Recherche de value bets
+  const findValueBets = async (message) => {
+    try {
+      const response = await fetch(`${API_CONFIG.BACKEND_URL}/api/value-bets`);
+      const data = await response.json();
+      
+      return {
+        type: 'value_bets',
+        data: data.bets,
+        message: `💎 **${data.bets.length} Value Bets trouvés**
         
-        # Create predictions dataframe
-        pred_data = []
-        for pred in predictions:
-            pred_data.append({
-                'Match': f"{pred.get('home_team', 'Home')} vs {pred.get('away_team', 'Away')}",
-                'Prédiction': pred['predicted_outcome'],
-                'Confiance': f"{pred.get('confidence', 0):.1%}",
-                'Probabilité': f"{pred.get('home_win_prob' if pred['predicted_outcome'] == 'Home Win' else 'away_win_prob' if pred['predicted_outcome'] == 'Away Win' else 'draw_prob', 0):.1%}",
-                'Ligue': pred.get('league', 'N/A')
-            })
+${data.bets.slice(0, 5).map(b => 
+  `• ${b.match}
+   ${b.selection} - Cote: **${b.odds}**
+   Edge: **${(b.edge * 100).toFixed(1)}%**
+   Confiance: **${(b.confidence * 100).toFixed(1)}%**`
+).join('\n\n')}`
+      };
+    } catch (error) {
+      return "Erreur lors de la recherche de value bets.";
+    }
+  };
+  
+  // Envoi de message
+  const handleSendMessage = async () => {
+    if (!inputMessage.trim()) return;
+    
+    const userMessage = {
+      type: 'user',
+      content: inputMessage,
+      timestamp: new Date()
+    };
+    
+    setMessages(prev => [...prev, userMessage]);
+    setInputMessage('');
+    setIsTyping(true);
+    
+    // Traiter la commande
+    const response = await processCommand(inputMessage);
+    
+    setIsTyping(false);
+    
+    const botMessage = {
+      type: 'bot',
+      content: typeof response === 'string' ? response : response.message,
+      data: response.data,
+      timestamp: new Date()
+    };
+    
+    setMessages(prev => [...prev, botMessage]);
+    
+    // Envoyer via WebSocket pour synchronisation
+    sendWsMessage({
+      type: 'chat_message',
+      content: inputMessage,
+      response: response
+    });
+  };
+  
+  // Actions rapides
+  const quickActions = [
+    { label: "Combiné du jour", command: "Crée un combiné avec 3 matchs d'aujourd'hui ayant des cotes > 1.5" },
+    { label: "Top prédictions", command: "Montre-moi les 5 meilleures prédictions" },
+    { label: "Value bets", command: "Trouve des value bets avec un edge > 5%" },
+    { label: "Statut portfolio", command: "Quel est le statut de mon portefeuille?" }
+  ];
+  
+  // Composant de carte de prédiction
+  const PredictionCard = ({ prediction }) => {
+    const confidenceColor = prediction.confidence > 0.7 ? 'text-green-500' : 
+                           prediction.confidence > 0.5 ? 'text-yellow-500' : 'text-red-500';
+    
+    return (
+      <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100 mb-3">
+        <div className="flex justify-between items-start mb-2">
+          <div>
+            <h4 className="font-semibold text-gray-900">
+              {prediction.home_team} vs {prediction.away_team}
+            </h4>
+            <p className="text-sm text-gray-500">{prediction.league} • {prediction.time}</p>
+          </div>
+          <span className={`text-sm font-bold ${confidenceColor}`}>
+            {(prediction.confidence * 100).toFixed(1)}%
+          </span>
+        </div>
         
-        if pred_data:
-            st.dataframe(pd.DataFrame(pred_data), use_container_width=True)
-    else:
-        st.warning(result.get('message', 'Aucune prédiction trouvée'))
-
-
-def display_portfolio_in_chat(result):
-    """Display portfolio result in chat."""
-    if result.get('success'):
-        portfolio = result['portfolio']
+        <div className="flex justify-between items-center mt-3">
+          <span className="text-sm font-medium text-indigo-600">
+            {prediction.predicted_outcome}
+          </span>
+          <button
+            onClick={() => setSelectedBets(prev => [...prev, prediction])}
+            className="px-3 py-1 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 transition-colors"
+          >
+            Ajouter
+          </button>
+        </div>
+      </div>
+    );
+  };
+  
+  // Interface principale
+  return (
+    <div className="h-screen flex flex-col bg-gradient-to-br from-indigo-50 to-purple-50">
+      {/* Header avec statut de connexion */}
+      <header className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white p-4 shadow-lg">
+        <div className="flex justify-between items-center">
+          <div className="flex items-center space-x-3">
+            <Brain className="w-8 h-8" />
+            <div>
+              <h1 className="text-xl font-bold">Bot Quantum Max</h1>
+              <p className="text-xs opacity-90">GPT-5 Powered</p>
+            </div>
+          </div>
+          <div className="flex items-center space-x-2">
+            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-400'} animate-pulse`} />
+            <span className="text-sm">{isConnected ? 'En ligne' : 'Hors ligne'}</span>
+          </div>
+        </div>
+      </header>
+      
+      {/* Contenu principal basé sur l'onglet actif */}
+      <div className="flex-1 overflow-hidden">
+        {activeTab === 'home' && (
+          <div className="h-full p-4 overflow-y-auto">
+            {/* Statistiques rapides */}
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <div className="flex items-center justify-between mb-2">
+                  <Trophy className="w-5 h-5 text-yellow-500" />
+                  <span className="text-xs text-gray-500">ROI</span>
+                </div>
+                <p className="text-2xl font-bold text-gray-900">
+                  {(portfolio.roi * 100).toFixed(1)}%
+                </p>
+              </div>
+              
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <div className="flex items-center justify-between mb-2">
+                  <Target className="w-5 h-5 text-green-500" />
+                  <span className="text-xs text-gray-500">Win Rate</span>
+                </div>
+                <p className="text-2xl font-bold text-gray-900">
+                  {(portfolio.winRate * 100).toFixed(1)}%
+                </p>
+              </div>
+              
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <div className="flex items-center justify-between mb-2">
+                  <DollarSign className="w-5 h-5 text-blue-500" />
+                  <span className="text-xs text-gray-500">Bankroll</span>
+                </div>
+                <p className="text-2xl font-bold text-gray-900">
+                  €{portfolio.bankroll.toLocaleString()}
+                </p>
+              </div>
+              
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <div className="flex items-center justify-between mb-2">
+                  <Activity className="w-5 h-5 text-purple-500" />
+                  <span className="text-xs text-gray-500">P&L Jour</span>
+                </div>
+                <p className={`text-2xl font-bold ${portfolio.dailyPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  €{portfolio.dailyPnl > 0 ? '+' : ''}{portfolio.dailyPnl}
+                </p>
+              </div>
+            </div>
+            
+            {/* Actions rapides */}
+            <div className="mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 mb-3">Actions Rapides</h3>
+              <div className="grid grid-cols-2 gap-2">
+                {quickActions.map((action, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => {
+                      setActiveTab('chat');
+                      setInputMessage(action.command);
+                    }}
+                    className="bg-white border border-indigo-200 text-indigo-600 p-3 rounded-xl text-sm font-medium hover:bg-indigo-50 transition-colors flex items-center justify-center space-x-2"
+                  >
+                    <Zap className="w-4 h-4" />
+                    <span>{action.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            
+            {/* Prédictions du jour */}
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900 mb-3">Top Prédictions</h3>
+              {predictions.slice(0, 3).map((pred, idx) => (
+                <PredictionCard key={idx} prediction={pred} />
+              ))}
+            </div>
+          </div>
+        )}
         
-        st.info("💰 Statut du Portefeuille")
+        {activeTab === 'chat' && (
+          <div className="h-full flex flex-col">
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {messages.map((msg, idx) => (
+                <div
+                  key={idx}
+                  className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div className={`max-w-[80%] ${
+                    msg.type === 'user' 
+                      ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white' 
+                      : 'bg-white border border-gray-200'
+                  } rounded-2xl p-4 shadow-sm`}>
+                    {msg.type === 'bot' && (
+                      <div className="flex items-center space-x-2 mb-2">
+                        <Bot className="w-5 h-5 text-indigo-600" />
+                        <span className="text-sm font-semibold text-gray-700">Quantum AI</span>
+                      </div>
+                    )}
+                    <div className={`${msg.type === 'bot' ? 'text-gray-800' : ''} whitespace-pre-wrap`}>
+                      {msg.content}
+                    </div>
+                    {msg.data && msg.data.type === 'combo' && (
+                      <button
+                        onClick={() => {
+                          setSelectedBets(msg.data.selections);
+                          setShowBetSlip(true);
+                        }}
+                        className="mt-3 w-full bg-indigo-100 text-indigo-700 py-2 rounded-lg font-medium hover:bg-indigo-200 transition-colors"
+                      >
+                        Voir le ticket
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+              
+              {isTyping && (
+                <div className="flex justify-start">
+                  <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm">
+                    <div className="flex space-x-2">
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }} />
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              <div ref={chatEndRef} />
+            </div>
+            
+            {/* Zone de saisie */}
+            <div className="border-t border-gray-200 bg-white p-4">
+              <div className="flex space-x-2">
+                <input
+                  type="text"
+                  value={inputMessage}
+                  onChange={(e) => setInputMessage(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+                  placeholder="Tapez votre commande..."
+                  className="flex-1 px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                />
+                <button
+                  onClick={handleSendMessage}
+                  disabled={!inputMessage.trim()}
+                  className="px-4 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Send className="w-5 h-5" />
+                </button>
+              </div>
+              
+              {/* Suggestions de commandes */}
+              <div className="mt-3 flex flex-wrap gap-2">
+                {quickActions.slice(0, 2).map((action, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => setInputMessage(action.command)}
+                    className="text-xs bg-gray-100 text-gray-700 px-3 py-1 rounded-full hover:bg-gray-200 transition-colors"
+                  >
+                    {action.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
         
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Bankroll", f"€{portfolio['total_bankroll']:,.0f}")
-        with col2:
-            st.metric("ROI", portfolio['roi'])
-        with col3:
-            st.metric("Win Rate", portfolio['win_rate'])
+        {activeTab === 'predictions' && (
+          <div className="h-full p-4 overflow-y-auto">
+            <h2 className="text-xl font-bold text-gray-900 mb-4">Prédictions</h2>
+            
+            {/* Filtres */}
+            <div className="bg-white rounded-xl p-3 mb-4 shadow-sm">
+              <div className="flex items-center justify-between">
+                <select className="text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                  <option>Toutes les ligues</option>
+                  <option>Premier League</option>
+                  <option>La Liga</option>
+                  <option>Ligue 1</option>
+                </select>
+                
+                <select className="text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                  <option>Confiance > 60%</option>
+                  <option>Confiance > 70%</option>
+                  <option>Confiance > 80%</option>
+                </select>
+              </div>
+            </div>
+            
+            {/* Liste des prédictions */}
+            <div className="space-y-3">
+              {predictions.map((pred, idx) => (
+                <PredictionCard key={idx} prediction={pred} />
+              ))}
+            </div>
+          </div>
+        )}
         
-        col4, col5, col6 = st.columns(3)
-        with col4:
-            st.metric("P&L Total", f"€{portfolio['total_pnl']:,.0f}")
-        with col5:
-            st.metric("Sharpe", f"{portfolio['sharpe_ratio']:.2f}")
-        with col6:
-            st.metric("Drawdown", portfolio['max_drawdown'])
-    else:
-        st.error(result.get('message', 'Impossible d\'obtenir le statut du portefeuille'))
-
-
-def display_value_bets_in_chat(result):
-    """Display value bets in chat."""
-    if result.get('success'):
-        value_bets = result['value_bets']
+        {activeTab === 'portfolio' && (
+          <div className="h-full p-4 overflow-y-auto">
+            <h2 className="text-xl font-bold text-gray-900 mb-4">Portfolio</h2>
+            
+            {/* Graphique de performance */}
+            <div className="bg-white rounded-xl p-4 mb-4 shadow-sm">
+              <h3 className="text-sm font-semibold text-gray-700 mb-3">Performance (30j)</h3>
+              <div className="h-32 bg-gradient-to-t from-indigo-50 to-transparent rounded-lg flex items-end justify-around px-2">
+                {[...Array(15)].map((_, i) => (
+                  <div
+                    key={i}
+                    className="w-4 bg-indigo-500 rounded-t"
+                    style={{ height: `${Math.random() * 100}%` }}
+                  />
+                ))}
+              </div>
+            </div>
+            
+            {/* Métriques détaillées */}
+            <div className="space-y-3">
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-600">Bankroll Total</span>
+                  <span className="font-bold text-gray-900">€{portfolio.bankroll.toLocaleString()}</span>
+                </div>
+              </div>
+              
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-600">ROI</span>
+                  <span className={`font-bold ${portfolio.roi >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    {(portfolio.roi * 100).toFixed(2)}%
+                  </span>
+                </div>
+              </div>
+              
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-600">Taux de Réussite</span>
+                  <span className="font-bold text-gray-900">{(portfolio.winRate * 100).toFixed(1)}%</span>
+                </div>
+              </div>
+              
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-600">Sharpe Ratio</span>
+                  <span className="font-bold text-gray-900">1.45</span>
+                </div>
+              </div>
+            </div>
+            
+            {/* Bouton de gestion avancée */}
+            <button
+              onClick={() => setActiveTab('chat')}
+              className="w-full mt-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-xl font-medium hover:opacity-90 transition-opacity"
+            >
+              Optimiser le Portfolio avec l'IA
+            </button>
+          </div>
+        )}
         
-        st.info(f"💎 {len(value_bets)} paris à valeur trouvés")
-        
-        if value_bets:
-            value_df = pd.DataFrame(value_bets)
-            st.dataframe(value_df, use_container_width=True)
-        else:
-            st.write("Aucun pari à valeur trouvé avec les critères actuels.")
-    else:
-        st.warning(result.get('message', 'Impossible de trouver des paris à valeur'))
-    """Betting combinations page."""
-    st.header("🎯 Betting Combinations")
-    
-    st.info("This feature would generate optimal betting combinations using the ComboGenerator class")
-    
-    # Placeholder for combination generator integration
-    if st.button("Generate Today's Combinations"):
-        with st.spinner("Generating combinations..."):
-            st.success("Combination generation would be implemented here")
+        {activeTab === 'settings' && (
+          <div className="h-full p-4 overflow-y-auto">
+            <h2 className="text-xl font-bold text-gray-900 mb-4">Paramètres</h2>
+            
+            <div className="space-y-4">
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <h3 className="font-semibold text-gray-900 mb-3">Modèle IA</h3>
+                <select className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                  <option>GPT-5 Turbo (Recommandé)</option>
+                  <option>GPT-4 Turbo</option>
+                  <option>Claude 3 Opus</option>
+                </select>
+              </div>
+              
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <h3 className="font-semibold text-gray-900 mb-3">Notifications</h3>
+                <div className="space-y-2">
+                  <label className="flex items-center justify-between">
+                    <span className="text-gray-700">Prédictions haute confiance</span>
+                    <input type="checkbox" defaultChecked className="toggle" />
+                  </label>
+                  <label className="flex items-center justify-between">
+                    <span className="text-gray-700">Opportunités d'arbitrage</span>
+                    <input type="checkbox" defaultChecked className="toggle" />
+                  </label>
+                  <label className="flex items-center justify-between">
+                    <span className="text-gray-700">Alertes portfolio</span>
+                    <input type="checkbox" defaultChecked className="toggle" />
+                  </label>
+                </div>
+              </div>
+              
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <h3 className="font-semibold text-gray-900 mb-3">Gestion des Risques</h3>
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-sm text-gray-600">Seuil de confiance minimum</label>
+                    <input type="range" min="50" max="95" defaultValue="70" className="w-full" />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>50%</span>
+                      <span>70%</span>
+                      <span>95%</span>
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <label className="text-sm text-gray-600">Kelly Fraction Max</label>
+                    <input type="range" min="10" max="50" defaultValue="25" className="w-full" />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>10%</span>
+                      <span>25%</span>
+                      <span>50%</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <h3 className="font-semibold text-gray-900 mb-3">API & Connexions</h3>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-600">OpenAI GPT-5</span>
+                    <span className={`text-xs px-2 py-1 rounded-full ${API_CONFIG.OPENAI_API_KEY ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                      {API_CONFIG.OPENAI_API_KEY ? 'Connecté' : 'Non configuré'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-600">WebSocket</span>
+                    <span className={`text-xs px-2 py-1 rounded-full ${isConnected ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                      {isConnected ? 'Connecté' : 'Déconnecté'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              
+              <button className="w-full bg-red-500 text-white py-3 rounded-xl font-medium hover:bg-red-600 transition-colors">
+                Réinitialiser les Paramètres
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+      
+      {/* Bet Slip flottant */}
+      {showBetSlip && selectedBets.length > 0 && (
+        <div className="absolute bottom-20 left-4 right-4 bg-white rounded-2xl shadow-2xl p-4 max-h-96 overflow-y-auto">
+          <div className="flex justify-between items-center mb-3">
+            <h3 className="font-bold text-gray-900">Ticket de Paris ({selectedBets.length})</h3>
+            <button onClick={() => setShowBetSlip(false)}>
+              <X className="w-5 h-5 text-gray-500" />
+            </button>
+          </div>
+          
+          <div className="space-y-2 mb-3">
+            {selectedBets.map((bet, idx) => (
+              <div key={idx} className="bg-gray-50 rounded-lg p-2 text-sm">
+                <div className="flex justify-between items-center">
+                  <span className="font-medium">{bet.match || `${bet.home_team} vs ${bet.away_team}`}</span>
+                  <button onClick={() => setSelectedBets(prev => prev.filter((_, i) => i !== idx))}>
+                    <X className="w-4 h-4 text-gray-400" />
+                  </button>
+                </div>
+                <div className="flex justify-between text-xs text-gray-600 mt-1">
+                  <span>{bet.selection || bet.predicted_outcome}</span>
+                  <span>@{bet.odds || '1.75'}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+          
+          <div className="border-t pt-3">
+            <div className="flex justify-between text-sm mb-2">
+              <span className="text-gray-600">Cote totale:</span>
+              <span className="font-bold">
+                {selectedBets.reduce((acc, bet) => acc * (bet.odds || 1.75), 1).toFixed(2)}
+              </span>
+            </div>
+            
+            <div className="flex space-x-2">
+              <input
+                type="number"
+                placeholder="Mise (€)"
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+              <button className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg font-medium hover:opacity-90 transition-opacity">
+                Valider
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Barre de navigation inférieure */}
+      <nav className="bg-white border-t border-gray-200 px-4 py-2">
+        <div className="flex justify-around">
+          <button
+            onClick={() => setActiveTab('home')}
+            className={`flex flex-col items-center py-2 px-3 rounded-lg transition-colors ${
+              activeTab === 'home' ? 'text-indigo-600 bg-indigo-50' : 'text-gray-600'
+            }`}
+          >
+            <Home className="w-5 h-5" />
+            <span className="text-xs mt-1">Accueil</span>
+          </button>
+          
+          <button
+            onClick={() => setActiveTab('chat')}
+            className={`flex flex-col items-center py-2 px-3 rounded-lg transition-colors relative ${
+              activeTab === 'chat' ? 'text-indigo-600 bg-indigo-50' : 'text-gray-600'
+            }`}
+          >
+            <Bot className="w-5 h-5" />
+            <span className="text-xs mt-1">IA Chat</span>
+            {messages.length > 1 && (
+              <span className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+            )}
+          </button>
+          
+          <button
+            onClick={() => setActiveTab('predictions')}
+            className={`flex flex-col items-center py-2 px-3 rounded-lg transition-colors ${
+              activeTab === 'predictions' ? 'text-indigo-600 bg-indigo-50' : 'text-gray-600'
+            }`}
+          >
+            <TrendingUp className="w-5 h-5" />
+            <span className="text-xs mt-1">Prédictions</span>
+          </button>
+          
+          <button
+            onClick={() => setActiveTab('portfolio')}
+            className={`flex flex-col items-center py-2 px-3 rounded-lg transition-colors ${
+              activeTab === 'portfolio' ? 'text-indigo-600 bg-indigo-50' : 'text-gray-600'
+            }`}
+          >
+            <DollarSign className="w-5 h-5" />
+            <span className="text-xs mt-1">Portfolio</span>
+          </button>
+          
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`flex flex-col items-center py-2 px-3 rounded-lg transition-colors ${
+              activeTab === 'settings' ? 'text-indigo-600 bg-indigo-50' : 'text-gray-600'
+            }`}
+          >
+            <Settings className="w-5 h-5" />
+            <span className="text-xs mt-1">Réglages</span>
+          </button>
+        </div>
+      </nav>
+      
+      {/* Indicateur de mise à jour en temps réel */}
+      {isConnected && lastMessage && (
+        <div className="absolute top-16 left-4 right-4 bg-green-500 text-white px-4 py-2 rounded-lg shadow-lg animate-slideDown">
+          <div className="flex items-center space-x-2">
+            <Activity className="w-4 h-4" />
+            <span className="text-sm">Mise à jour en temps réel</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
+// CSS pour les animations et styles personnalisés
+const styles = `
+  @keyframes slideDown {
+    from {
+      transform: translateY(-100%);
+      opacity: 0;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+  
+  .animate-slideDown {
+    animation: slideDown 0.3s ease-out;
+  }
+  
+  .toggle {
+    appearance: none;
+    width: 44px;
+    height: 24px;
+    background: #cbd5e0;
+    border-radius: 9999px;
+    position: relative;
+    transition: background 0.3s;
+    cursor: pointer;
+  }
+  
+  .toggle:checked {
+    background: linear-gradient(to right, #6366f1, #a855f7);
+  }
+  
+  .toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 20px;
+    height: 20px;
+    background: white;
+    border-radius: 50%;
+    transition: transform 0.3s;
+  }
+  
+  .toggle:checked::after {
+    transform: translateX(20px);
+  }
+  
+  /* Effet de glissement pour mobile */
+  .swipe-indicator {
+    position: fixed;
+    bottom: 70px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 40px;
+    height: 4px;
+    background: rgba(0,0,0,0.2);
+    border-radius: 2px;
+  }
+  
+  /* Animation de pulsation */
+  @keyframes pulse {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
+    }
+  }
+  
+  /* Optimisations PWA */
+  * {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  
+  input, textarea {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  
+  /* Scrollbar personnalisée */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 10px;
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 10px;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    background: #555;
+  }
+`;
 
-def settings_page():
-    """Settings and configuration page."""
-    st.header("⚙️ Settings & Configuration")
-    
-    # Model settings
-    st.subheader("🤖 Model Settings")
-    
-    confidence_threshold = st.slider(
-        "Confidence Threshold",
-        0.5, 1.0, settings.confidence_threshold, 0.05,
-        help="Minimum confidence required for high-confidence predictions"
-    )
-    
-    min_edge = st.slider(
-        "Minimum Edge",
-        0.01, 0.2, settings.min_edge, 0.01,
-        help="Minimum expected edge required for betting opportunities"
-    )
-    
-    max_kelly = st.slider(
-        "Maximum Kelly Fraction",
-        0.1, 0.5, settings.max_kelly_fraction, 0.05,
-        help="Maximum fraction of bankroll to bet using Kelly Criterion"
-    )
-    
-    # Data settings
-    st.subheader("📊 Data Settings")
-    
-    lookback_days = st.number_input(
-        "Lookback Period (days)",
-        30, 365, settings.lookback_days,
-        help="Number of days to look back for feature engineering"
-    )
-    
-    monte_carlo_runs = st.number_input(
-        "Monte Carlo Runs",
-        1000, 50000, settings.max_monte_carlo_runs,
-        help="Number of Monte Carlo simulation runs"
-    )
-    
-    # Save settings
-    if st.button("Save Settings"):
-        st.success("Settings saved successfully!")
-    
-    # System information
-    st.subheader("ℹ️ System Information")
-    
-    st.info(f"Environment: {settings.environment}")
-    st.info(f"Log Level: {settings.log_level}")
-    st.info(f"Supported Leagues: {', '.join(settings.supported_leagues)}")
+// Injection des styles
+if (typeof document !== 'undefined') {
+  const styleSheet = document.createElement("style");
+  styleSheet.innerText = styles;
+  document.head.appendChild(styleSheet);
+}
 
-
-if __name__ == "__main__":
-    main()
+export default QuantumBetApp;
